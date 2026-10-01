@@ -13,9 +13,19 @@ Actions: `list_vaults`, `list_keys`, `add`, `update`, `delete`.
 
 ## Install
 
-From GitHub Packages (`@frapetti-dev/ansible-vaults`, published by the `Publish` workflow on each GitHub Release).
+### From git (recommended)
 
-The repo and package are private, so npm needs a registry mapping for the scope and a token with `read:packages`. Add to `~/.npmrc`:
+The repo is private, so git credentials with read access are required (e.g. `gh auth login`).
+
+```sh
+omp plugin install github:frapetti-dev/ansible-vaults
+```
+
+This installs the default branch HEAD. To pin a release, append a ref: `github:frapetti-dev/ansible-vaults#v0.1.0`.
+
+### From GitHub Packages
+
+Each GitHub Release publishes `@frapetti-dev/ansible-vaults` to GitHub Packages. The package is private, so npm/bun needs the scope mapped to GitHub Packages plus a classic PAT with `read:packages` (fine-grained PATs are not supported). Add to `~/.npmrc`:
 
 ```ini
 @frapetti-dev:registry=https://npm.pkg.github.com
@@ -28,15 +38,12 @@ Then:
 omp plugin install @frapetti-dev/ansible-vaults
 ```
 
-Do not use an `npm:` prefix: omp passes the spec to `bun install` as-is, and bun rejects `npm:@frapetti-dev/ansible-vaults` as an invalid dependency name. Without the `~/.npmrc` scope mapping, bun queries npmjs.org and fails with a 404.
+Notes:
 
-From git (alternative; gh/git credentials are required):
+- Do not use an `npm:` prefix. omp passes the spec to `bun install` as-is, and bun rejects `npm:@frapetti-dev/ansible-vaults` as an invalid dependency name.
+- Without the `~/.npmrc` scope mapping, bun queries registry.npmjs.org and fails with a 404.
 
-```sh
-omp plugin install git+https://github.com/frapetti-dev/ansible-vaults.git
-```
-
-From a local clone:
+### From a local clone
 
 ```sh
 omp plugin link <path-to-clone>
