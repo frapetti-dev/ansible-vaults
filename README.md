@@ -25,8 +25,10 @@ The repo and package are private, so npm needs a registry mapping for the scope 
 Then:
 
 ```sh
-omp plugin install npm:@frapetti-dev/ansible-vaults
+omp plugin install @frapetti-dev/ansible-vaults
 ```
+
+Do not use an `npm:` prefix: omp passes the spec to `bun install` as-is, and bun rejects `npm:@frapetti-dev/ansible-vaults` as an invalid dependency name. Without the `~/.npmrc` scope mapping, bun queries npmjs.org and fails with a 404.
 
 From git (alternative; gh/git credentials are required):
 
