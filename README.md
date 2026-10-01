@@ -13,7 +13,22 @@ Actions: `list_vaults`, `list_keys`, `add`, `update`, `delete`.
 
 ## Install
 
-From git (the repo is private, so gh/git credentials are required):
+From GitHub Packages (`@frapetti-dev/ansible-vaults`, published by the `Publish` workflow on each GitHub Release).
+
+The repo and package are private, so npm needs a registry mapping for the scope and a token with `read:packages`. Add to `~/.npmrc`:
+
+```ini
+@frapetti-dev:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=<PAT with read:packages>
+```
+
+Then:
+
+```sh
+omp plugin install npm:@frapetti-dev/ansible-vaults
+```
+
+From git (alternative; gh/git credentials are required):
 
 ```sh
 omp plugin install git+https://github.com/frapetti-dev/ansible-vaults.git
@@ -24,6 +39,12 @@ From a local clone:
 ```sh
 omp plugin link <path-to-clone>
 ```
+
+## Releasing
+
+1. Bump `version` in `package.json` and merge to `main`.
+2. Create a GitHub Release whose tag is `v<version>` (e.g. `gh release create v0.1.1 --generate-notes`). The `Publish` workflow checks that the tag matches `package.json` and the checked-out commit, then runs `npm publish` to GitHub Packages.
+3. To republish an existing tag, run the workflow manually: `gh workflow run publish.yml -f tag=v<version>`.
 
 ## Per-project config
 
