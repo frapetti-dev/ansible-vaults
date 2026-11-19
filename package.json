@@ -1,6 +1,6 @@
 {
 	"name": "@frapetti-dev/ansible-vaults",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "omp plugin: ansible_vault tool to list/add/update/delete keys in Ansible Vault files without exposing values to the model",
 	"author": "frapetti-dev (https://github.com/frapetti-dev)",
 	"type": "module",
