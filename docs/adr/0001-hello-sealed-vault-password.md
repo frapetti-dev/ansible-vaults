@@ -1,0 +1,3 @@
+# Vault passwords sealed by a Windows Hello signature
+
+Vault passwords must be unreadable by other processes running as the user, including the agent's own shell, so Credential Manager or DPAPI alone is not enough. On Windows a non-exportable Hello key signs a fixed per-id challenge; the deterministic RSA PKCS#1 v1.5 signature is stretched with HKDF into an AES-256-GCM key that seals the password, and only the ciphertext is stored. A Hello PIN reset destroys the key, so every password has to be enrolled again. macOS uses a keychain item that trusts no app (no Secure Enclave without a signed binary); Linux has no per-read presence check, so its Secret Service storage is knowingly weaker.

@@ -4,7 +4,7 @@ omp plugin that registers the `ansible_vault` tool: list, add, update and delete
 
 ## What it does
 
-Actions: `list_vaults`, `list_keys`, `add`, `update`, `delete`.
+Actions: `list_vaults`, `list_keys`, `add`, `update`, `delete`, `set_password`.
 
 - Values are never returned to the model, only key names and value lengths.
 - `add` / `update` / `delete` show a confirmation dialog listing the exact keys. Denying it writes nothing.
@@ -60,11 +60,34 @@ omp plugin link <path-to-clone>
 Create `.omp/ansible-vaults.json` in each project:
 
 ```json
-{"vaults":{"xion":{"file":"ansible/group_vars/xion/vault.yml","passwordFile":".omp/keys/.vault-pass","description":"Secrets for the xion VPS"}}}
+{"vaults":{"xion":{"file":"ansible/group_vars/xion/vault.yml","passwordId":"xion","description":"Secrets for the xion VPS"}}}
 ```
 
-- Vault names must match `^[A-Za-z0-9_-]+$`.
-- `file` and `passwordFile` resolve relative to the session cwd.
+- Vault names and `passwordId` must match `^[A-Za-z0-9_-]+$`.
+- `file` resolves relative to the session cwd.
+- A `passwordId` is machine-wide: vaults naming the same id, even in different projects, share one password.
+- `passwordFile` is no longer supported; see below.
+
+## Vault password
+
+Passwords live in the OS password store, never in a readable file:
+
+| OS      | Store | Unlock |
+|---------|-------|--------|
+| Windows | Hello-sealed blob in Credential Manager (AES-GCM key derived from a Windows Hello signature) | Hello PIN/biometric prompt |
+| macOS   | keychain item that trusts no application | OS access dialog on every read |
+| Linux   | Secret Service (libsecret) | none. Weaker: any process running as the user can read it |
+
+Unlock happens once per omp process; the password then stays in memory until omp exits.
+
+> **Not tested:** only the Windows (Hello) implementation has been run. The macOS and Linux backends are implemented but untested.
+
+Enroll a password with `set_password` (shows a confirmation dialog, then verifies the password against the vault before storing it):
+
+- `{"action":"set_password","vault":"xion"}` masks a typed password in the TUI.
+- `{"action":"set_password","vault":"xion","passwordSource":"file","passwordPath":".omp/keys/.vault-pass"}` imports the old password file once. Delete the file afterwards; the tool never does.
+
+Windows: a Hello PIN reset destroys the key; run `set_password` again. macOS: never click "Always Allow"; it lets any `security` call read the password silently.
 
 ## Value sources
 

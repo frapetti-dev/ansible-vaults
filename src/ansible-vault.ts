@@ -12,6 +12,7 @@ import {
 } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { PASSWORD_STORE_LABEL, isVaultPasswordStored, loadVaultPassword, storeVaultPassword } from "./password-store.ts";
 
 /**
  * `ansible_vault` tool: list / add / update / delete top-level keys of Ansible
@@ -199,7 +200,7 @@ function isEnoent(err: unknown): boolean {
 
 interface VaultConfigEntry {
   file: string;
-  passwordFile: string;
+  passwordId: string;
   description?: string;
 }
 
@@ -233,15 +234,20 @@ async function loadConfig(cwd: string): Promise<Record<string, VaultConfigEntry>
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) throw invalid(`vault "${name}" must be an object`);
     const e = entry as Record<string, unknown>;
     if (typeof e.file !== "string" || e.file === "") throw invalid(`vault "${name}": "file" must be a non-empty string`);
-    if (typeof e.passwordFile !== "string" || e.passwordFile === "") {
-      throw invalid(`vault "${name}": "passwordFile" must be a non-empty string`);
+    if (e.passwordFile !== undefined) {
+      throw invalid(
+        `vault "${name}": "passwordFile" is no longer supported; set "passwordId" and import it with action set_password, passwordSource "file"`,
+      );
+    }
+    if (typeof e.passwordId !== "string" || !VAULT_NAME_RE.test(e.passwordId)) {
+      throw invalid(`vault "${name}": "passwordId" must match ${VAULT_NAME_RE.source}`);
     }
     if (e.description !== undefined && typeof e.description !== "string") {
       throw invalid(`vault "${name}": "description" must be a string`);
     }
     out[name] = {
       file: e.file,
-      passwordFile: e.passwordFile,
+      passwordId: e.passwordId,
       ...(e.description !== undefined ? { description: e.description as string } : {}),
     };
   }
@@ -252,7 +258,7 @@ async function loadConfig(cwd: string): Promise<Record<string, VaultConfigEntry>
 // Tool
 // ---------------------------------------------------------------------------
 
-type Action = "list_vaults" | "list_keys" | "add" | "update" | "delete";
+type Action = "list_vaults" | "list_keys" | "add" | "update" | "delete" | "set_password";
 type Source = "generate" | "prompt" | "file" | "literal";
 
 interface EntryParam {
@@ -270,6 +276,8 @@ interface Params {
   vault?: string;
   entries?: EntryParam[];
   keys?: string[];
+  passwordSource?: "prompt" | "file";
+  passwordPath?: string;
 }
 
 const ALLOWED_FIELDS: Record<Source, (keyof EntryParam)[]> = {
@@ -282,6 +290,13 @@ const SOURCE_FIELDS: (keyof EntryParam)[] = ["format", "length", "path", "value"
 
 function validateParams(p: Params): void {
   if (p.action !== "list_vaults" && !p.vault) throw new Error(`"vault" is required for action "${p.action}"`);
+  if (p.action !== "set_password" && (p.passwordSource !== undefined || p.passwordPath !== undefined)) {
+    throw new Error(`"passwordSource"/"passwordPath" are only valid for set_password`);
+  }
+  if (p.passwordSource === "file" && !p.passwordPath) throw new Error(`"passwordPath" is required for passwordSource "file"`);
+  if (p.passwordSource !== "file" && p.passwordPath !== undefined) {
+    throw new Error(`"passwordPath" is only valid with passwordSource "file"`);
+  }
   const mutating = p.action === "add" || p.action === "update";
   if (mutating) {
     if (!p.entries || p.entries.length === 0) throw new Error(`"entries" is required and must be non-empty for action "${p.action}"`);
@@ -447,13 +462,68 @@ async function readIfExists(file: string, what: string): Promise<string> {
   }
 }
 
-async function exists(file: string): Promise<boolean> {
-  try {
-    await fs.access(file);
-    return true;
-  } catch {
-    return false;
+// passwordId -> vault password; lives until omp exits
+const passwordCache = new Map<string, string>();
+
+async function unlock(id: string): Promise<string> {
+  const cached = passwordCache.get(id);
+  if (cached !== undefined) return cached;
+  const password = await loadVaultPassword(id);
+  passwordCache.set(id, password);
+  return password;
+}
+
+async function setPassword(
+  params: Params,
+  vaultName: string,
+  config: Record<string, VaultConfigEntry>,
+  fileText: string,
+  ctx: ExtensionContext,
+  signal: AbortSignal | undefined,
+) {
+  const id = config[vaultName]!.passwordId;
+  const source = params.passwordSource ?? "prompt";
+  if (source === "prompt" && ctx.mode !== "tui") throw new Error("prompt source needs the interactive TUI");
+  if (!ctx.hasUI) {
+    throw new Error("ansible_vault set_password needs an interactive UI to confirm; ask the user to run it from the TUI.");
   }
+  const users = Object.entries(config)
+    .filter(([, v]) => v.passwordId === id)
+    .map(([n]) => n);
+  const confirmed = await ctx.ui.confirm(
+    `Ansible vault set_password: ${id}`,
+    [
+      `  Password id: ${id}`,
+      `  Used by vaults: ${users.join(", ")}`,
+      source === "prompt" ? "  Source: prompt" : `  Source: file ${params.passwordPath}`,
+      `  Store: ${PASSWORD_STORE_LABEL}`,
+    ].join("\n"),
+  );
+  if (!confirmed) throw new Error(`User denied set_password for "${id}"; nothing was stored.`);
+
+  let password: string;
+  if (source === "prompt") {
+    password = (await readMasked(ctx, signal, `Vault password "${id}"`, `Used by: ${users.join(", ")}`))?.trim() ?? "";
+    if (password === "") throw new Error(`User cancelled password entry for "${id}"; nothing was stored.`);
+  } else {
+    const abs = path.resolve(ctx.cwd, params.passwordPath!);
+    password = (await readIfExists(abs, "Password file")).trim();
+    if (password === "") throw new Error(`Password file is empty: ${abs}`);
+  }
+
+  // Replaces a "type it twice" confirmation.
+  try {
+    decryptVault(fileText, password, vaultName);
+  } catch {
+    throw new Error(`Password does not decrypt vault "${vaultName}"; nothing was stored.`);
+  }
+
+  await storeVaultPassword(id, password);
+  passwordCache.set(id, password);
+
+  const lines = [`password "${id}" stored in ${PASSWORD_STORE_LABEL}`, `vaults: ${users.join(", ")}`];
+  if (source === "file") lines.push(`you can now delete ${params.passwordPath}`);
+  return text(lines.join("\n"), { action: "set_password", passwordId: id, vaults: users, store: PASSWORD_STORE_LABEL });
 }
 
 function text(t: string, details: unknown) {
@@ -470,9 +540,9 @@ export default function ansibleVault(pi: ExtensionAPI) {
     loadMode: "essential",
     approval: "read",
     description:
-      'List, add, update and delete top-level keys in Ansible Vault files declared in .omp/ansible-vaults.json. Actions: list_vaults (configured vaults, no decryption), list_keys (key names only), add / update / delete. Secret VALUES ARE NEVER RETURNED to you; only key names and lengths. add/update/delete show a user confirmation dialog listing the exact keys — the user approving it is the authorization; if denied, nothing is written. Operations are atomic: all keys are applied or none. Value sources: generate (random, for secrets), prompt (user types it in a masked prompt), file (read from a path, e.g. from secret_input), literal (NON-SECRET values only, e.g. a domain — it is visible in chat). add fails if a key exists; update/delete fail if a key is missing.',
+      'List, add, update and delete top-level keys in Ansible Vault files declared in .omp/ansible-vaults.json. Actions: list_vaults (configured vaults, no decryption), list_keys (key names only), add / update / delete, set_password (store a vault\'s password in the OS password store; user types it or imports it from a file; verified against the vault). Secret VALUES ARE NEVER RETURNED to you; only key names and lengths. add/update/delete show a user confirmation dialog listing the exact keys — the user approving it is the authorization; if denied, nothing is written. Operations are atomic: all keys are applied or none. Value sources: generate (random, for secrets), prompt (user types it in a masked prompt), file (read from a path, e.g. from secret_input), literal (NON-SECRET values only, e.g. a domain — it is visible in chat). add fails if a key exists; update/delete fail if a key is missing.',
     parameters: z.object({
-      action: z.enum(["list_vaults", "list_keys", "add", "update", "delete"]),
+      action: z.enum(["list_vaults", "list_keys", "add", "update", "delete", "set_password"]),
       vault: z.string().optional().describe("Vault name from .omp/ansible-vaults.json; required except for list_vaults"),
       entries: z
         .array(
@@ -498,6 +568,14 @@ export default function ansibleVault(pi: ExtensionAPI) {
         .optional()
         .describe("add/update: one or more keys, applied atomically"),
       keys: z.array(z.string()).optional().describe("delete: keys to remove, applied atomically"),
+      passwordSource: z
+        .enum(["prompt", "file"])
+        .optional()
+        .describe("set_password only; default prompt (masked TUI input)"),
+      passwordPath: z
+        .string()
+        .optional()
+        .describe("set_password with passwordSource file only; path relative to cwd, e.g. the old password file"),
     }),
     async execute(
       _toolCallId: string,
@@ -513,7 +591,6 @@ export default function ansibleVault(pi: ExtensionAPI) {
         const vaults = await Promise.all(
           Object.entries(config).map(async ([name, v]) => {
             const file = path.resolve(ctx.cwd, v.file);
-            const passwordFile = path.resolve(ctx.cwd, v.passwordFile);
             let header: string | null = null;
             try {
               header = (await fs.readFile(file, "utf8")).split(/\r?\n/, 1)[0] ?? null;
@@ -524,27 +601,38 @@ export default function ansibleVault(pi: ExtensionAPI) {
               name,
               description: v.description ?? null,
               file: v.file,
-              passwordFile: v.passwordFile,
+              passwordId: v.passwordId,
               fileExists: header !== null,
-              passwordFileExists: await exists(passwordFile),
+              passwordStored: await isVaultPasswordStored(v.passwordId),
               header,
             };
           }),
         );
-        return text(JSON.stringify({ vaults }, null, 2), { action: "list_vaults", vaults });
+        return text(JSON.stringify({ passwordStore: PASSWORD_STORE_LABEL, vaults }, null, 2), {
+          action: "list_vaults",
+          passwordStore: PASSWORD_STORE_LABEL,
+          vaults,
+        });
       }
 
       const vaultName = params.vault!;
       const entry = config[vaultName];
       if (!entry) throw new Error(`Unknown vault "${vaultName}". Available: ${Object.keys(config).join(", ")}`);
       const vaultFile = path.resolve(ctx.cwd, entry.file);
-      const passwordFile = path.resolve(ctx.cwd, entry.passwordFile);
 
       const fileText = await readIfExists(vaultFile, "Vault file");
-      const password = (await readIfExists(passwordFile, "Password file")).trim();
-      if (password === "") throw new Error(`Password file is empty: ${passwordFile}`);
 
-      const { plaintext, header } = decryptVault(fileText, password, vaultName);
+      if (params.action === "set_password") return setPassword(params, vaultName, config, fileText, ctx, signal);
+
+      const password = await unlock(entry.passwordId);
+      let decrypted: { plaintext: string; header: string };
+      try {
+        decrypted = decryptVault(fileText, password, vaultName);
+      } catch (err) {
+        passwordCache.delete(entry.passwordId); // stale cache or rotated password: unlock again next call
+        throw err;
+      }
+      const { plaintext, header } = decrypted;
 
       if (params.action === "list_keys") {
         const names = parseTopLevelKeys(plaintext).map(b => b.key);
