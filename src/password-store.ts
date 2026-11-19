@@ -206,3 +206,21 @@ export async function storeVaultPassword(id: string, password: string): Promise<
   if (platform === "linux") return secretService(() => Bun.secrets.set({ service: SERVICE, name: id, value: password }));
   throw unsupported();
 }
+
+/** Must not prompt. The shared Windows Hello key is never deleted. */
+export async function deleteVaultPassword(id: string): Promise<void> {
+  if (platform === "win32") {
+    await Bun.secrets.delete({ service: SERVICE, name: id });
+    return;
+  }
+  if (platform === "darwin") {
+    const r = await security(["delete-generic-password", "-s", SERVICE, "-a", id]);
+    if (r.code !== 0 && r.code !== 44) throw new Error(`macOS keychain delete failed: ${r.err.trim()}`);
+    return;
+  }
+  if (platform === "linux") {
+    await secretService(() => Bun.secrets.delete({ service: SERVICE, name: id }));
+    return;
+  }
+  throw unsupported();
+}

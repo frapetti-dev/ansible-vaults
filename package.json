@@ -5,7 +5,7 @@
 	"author": "frapetti-dev (https://github.com/frapetti-dev)",
 	"type": "module",
 	"main": "src/ansible-vault.ts",
-	"files": ["src/ansible-vault.ts", "src/password-store.ts", "README.md"],
+	"files": ["src/ansible-vault.ts", "src/password-store.ts", "src/vaults-ui.ts", "src/tsp-nodes.ts", "README.md"],
 	"keywords": ["omp", "omp-plugin", "omp-extension", "ansible", "ansible-vault", "secrets"],
 	"repository": { "type": "git", "url": "git+https://github.com/frapetti-dev/ansible-vaults.git" },
 	"homepage": "https://github.com/frapetti-dev/ansible-vaults#readme",

@@ -27,3 +27,11 @@ _Avoid_: import, registration
 **Unlock**:
 Obtaining a vault password from the password store; on Windows and macOS it requires the user's presence.
 _Avoid_: login, decrypt
+
+**Vault declaration**:
+A project's config entry naming a vault, its file and its password id; removing it leaves the vault file untouched.
+_Avoid_: vault entry, config vault
+
+**Orphaned password**:
+A stored vault password that no vault declaration in the current project uses; other projects may still use it.
+_Avoid_: unused password, dangling password

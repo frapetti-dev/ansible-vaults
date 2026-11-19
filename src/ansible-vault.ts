@@ -194,20 +194,20 @@ export function applyMutation(plaintext: string, op: Mutation): string {
 // Config
 // ---------------------------------------------------------------------------
 
-function isEnoent(err: unknown): boolean {
+export function isEnoent(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === "ENOENT";
 }
 
-interface VaultConfigEntry {
+export interface VaultConfigEntry {
   file: string;
   passwordId: string;
   description?: string;
 }
 
-const CONFIG_REL = ".omp/ansible-vaults.json";
-const VAULT_NAME_RE = /^[A-Za-z0-9_-]+$/;
+export const CONFIG_REL = ".omp/ansible-vaults.json";
+export const VAULT_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
-async function loadConfig(cwd: string): Promise<Record<string, VaultConfigEntry>> {
+export async function loadConfig(cwd: string): Promise<Record<string, VaultConfigEntry>> {
   const configPath = path.resolve(cwd, CONFIG_REL);
   let raw: string;
   try {
@@ -252,6 +252,44 @@ async function loadConfig(cwd: string): Promise<Record<string, VaultConfigEntry>
     };
   }
   return out;
+}
+
+/** Preserves unknown top-level fields and unknown per-vault fields of an existing config; entries keep insertion order. */
+export async function writeConfig(cwd: string, vaults: Record<string, VaultConfigEntry>): Promise<void> {
+  const configPath = path.resolve(cwd, CONFIG_REL);
+  let obj: Record<string, unknown> = {};
+  try {
+    const json: unknown = JSON.parse(await fs.readFile(configPath, "utf8"));
+    if (typeof json === "object" && json !== null && !Array.isArray(json)) obj = json as Record<string, unknown>;
+  } catch (err) {
+    if (!isEnoent(err)) throw err;
+  }
+  const prev = typeof obj.vaults === "object" && obj.vaults !== null ? (obj.vaults as Record<string, unknown>) : {};
+  obj.vaults = Object.fromEntries(
+    Object.entries(vaults).map(([n, v]) => {
+      const old = prev[n];
+      const extra = typeof old === "object" && old !== null && !Array.isArray(old) ? { ...old } : {};
+      // Known fields always come from `vaults`: a cleared description must not survive via `extra`.
+      for (const k of ["file", "passwordId", "description"]) delete (extra as Record<string, unknown>)[k];
+      return [
+        n,
+        { file: v.file, passwordId: v.passwordId, ...(v.description !== undefined ? { description: v.description } : {}), ...extra },
+      ];
+    }),
+  );
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await writeAtomic(configPath, JSON.stringify(obj, null, 2) + "\n");
+}
+
+async function writeAtomic(file: string, content: string): Promise<void> {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`);
+  try {
+    await fs.writeFile(tmp, content, "utf8");
+    await fs.rename(tmp, file);
+  } catch (err) {
+    await fs.rm(tmp, { force: true });
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +358,7 @@ function validateParams(p: Params): void {
 
 const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
-function generateValue(format: NonNullable<EntryParam["format"]>, n: number): string {
+export function generateValue(format: NonNullable<EntryParam["format"]>, n: number): string {
   switch (format) {
     case "urlsafe":
       return randomBytes(n).toString("base64url");
@@ -349,7 +387,7 @@ function describeEntry(e: EntryParam): string {
   }
 }
 
-async function readMasked(
+export async function readMasked(
   ctx: ExtensionContext,
   signal: AbortSignal | undefined,
   title: string,
@@ -453,7 +491,7 @@ async function resolveValue(
   }
 }
 
-async function readIfExists(file: string, what: string): Promise<string> {
+export async function readIfExists(file: string, what: string): Promise<string> {
   try {
     return await fs.readFile(file, "utf8");
   } catch (err) {
@@ -463,14 +501,43 @@ async function readIfExists(file: string, what: string): Promise<string> {
 }
 
 // passwordId -> vault password; lives until omp exits
-const passwordCache = new Map<string, string>();
+export const passwordCache = new Map<string, string>();
 
-async function unlock(id: string): Promise<string> {
+export async function unlock(id: string): Promise<string> {
   const cached = passwordCache.get(id);
   if (cached !== undefined) return cached;
   const password = await loadVaultPassword(id);
   passwordCache.set(id, password);
   return password;
+}
+
+/** Encrypt, round-trip verify, then atomically replace the vault file. */
+export async function writeVaultFile(
+  vaultFile: string,
+  oldFileText: string,
+  plaintext: string,
+  password: string,
+  header: string,
+  label: string,
+): Promise<void> {
+  const eol = oldFileText.includes("\r\n") ? "\r\n" : "\n";
+  const newText = encryptVault(plaintext, password, header, eol);
+  if (decryptVault(newText, password, label).plaintext !== plaintext) {
+    throw new Error("Round-trip verification failed; vault not written");
+  }
+  await writeAtomic(vaultFile, newText);
+}
+
+/** Verify the password decrypts the vault, then store it and cache it. */
+export async function enroll(id: string, password: string, vaultName: string, fileText: string): Promise<void> {
+  // Replaces a "type it twice" confirmation.
+  try {
+    decryptVault(fileText, password, vaultName);
+  } catch {
+    throw new Error(`Password does not decrypt vault "${vaultName}"; nothing was stored.`);
+  }
+  await storeVaultPassword(id, password);
+  passwordCache.set(id, password);
 }
 
 async function setPassword(
@@ -511,15 +578,7 @@ async function setPassword(
     if (password === "") throw new Error(`Password file is empty: ${abs}`);
   }
 
-  // Replaces a "type it twice" confirmation.
-  try {
-    decryptVault(fileText, password, vaultName);
-  } catch {
-    throw new Error(`Password does not decrypt vault "${vaultName}"; nothing was stored.`);
-  }
-
-  await storeVaultPassword(id, password);
-  passwordCache.set(id, password);
+  await enroll(id, password, vaultName, fileText);
 
   const lines = [`password "${id}" stored in ${PASSWORD_STORE_LABEL}`, `vaults: ${users.join(", ")}`];
   if (source === "file") lines.push(`you can now delete ${params.passwordPath}`);
@@ -685,20 +744,7 @@ export default function ansibleVault(pi: ExtensionAPI) {
           : { kind: action as "add" | "update", entries: resolved.map(r => ({ key: r.key, value: r.value })) };
       const newPlaintext = applyMutation(plaintext, finalOp);
 
-      const eol = fileText.includes("\r\n") ? "\r\n" : "\n";
-      const newText = encryptVault(newPlaintext, password, header, eol);
-      if (decryptVault(newText, password, vaultName).plaintext !== newPlaintext) {
-        throw new Error("Round-trip verification failed; vault not written");
-      }
-
-      const tmp = path.join(path.dirname(vaultFile), `.${path.basename(vaultFile)}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`);
-      try {
-        await fs.writeFile(tmp, newText, "utf8");
-        await fs.rename(tmp, vaultFile);
-      } catch (err) {
-        await fs.rm(tmp, { force: true });
-        throw err;
-      }
+      await writeVaultFile(vaultFile, fileText, newPlaintext, password, header, vaultName);
 
       const summary =
         action === "delete"
@@ -715,6 +761,16 @@ export default function ansibleVault(pi: ExtensionAPI) {
             ? keyList.map(key => ({ key, source: "delete" }))
             : resolved.map(r => ({ key: r.key, source: r.entry.source, length: r.value.length })),
       });
+    },
+  });
+
+  pi.registerCommand("vaults", {
+    description: "Ansible vaults: manage vault declarations, passwords and keys",
+    handler: async (_args: string, ctx: ExtensionContext) => {
+      if (ctx.mode !== "tui") return ctx.ui.notify("/vaults needs the interactive TUI", "warning");
+      // Dynamic: vaults-ui.ts imports pi-tui as a value; plain-bun imports of this file must keep working.
+      const { runVaultsScreen } = await import("./vaults-ui.ts");
+      await runVaultsScreen(ctx);
     },
   });
 }

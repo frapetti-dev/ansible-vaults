@@ -1,6 +1,6 @@
 # ansible-vaults
 
-omp plugin that registers the `ansible_vault` tool: list, add, update and delete top-level keys in Ansible Vault files without ever exposing secret values to the model.
+omp plugin that registers the `ansible_vault` tool: list, add, update and delete top-level keys in Ansible Vault files without ever exposing secret values to the model. The `/vaults` command offers the same operations to the user in a TUI screen.
 
 ## What it does
 
@@ -99,6 +99,15 @@ Each entry passed to `add` / `update` has a `source`:
 | `prompt`   | `prompt`         | masked TUI input; TUI mode only |
 | `file`     | `path`           | read from a file, e.g. a path produced by `secret_input` |
 | `literal`  | `value`          | non-secret values only (visible in chat) |
+
+## `/vaults` command
+
+`/vaults` opens a full-screen manager for the current project (interactive TUI only). Nothing it shows is sent to the model.
+
+- Vault list: `a` declares a vault (creates an empty encrypted file if the file is missing), `e` edits name, file, password id or description, `d` removes the declaration, `p` stores the password, `Enter` unlocks and lists keys.
+- Key list: `n` adds a key, `u` overwrites a value, `x` deletes a key, `r` reveals/hides a value, `Tab` goes back. Values can be typed (masked) or generated.
+- Removing a declaration leaves the vault file and its stored password alone. If no remaining declaration in the project uses that password id, it offers to delete the password; other projects using the same id would need `set_password` again.
+- Edits rewrite `.omp/ansible-vaults.json` atomically and keep fields the plugin does not know about.
 
 ## Migrating from a project-local copy
 
