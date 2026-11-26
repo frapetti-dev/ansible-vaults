@@ -5,7 +5,7 @@
  * Values never leave this process: nothing here is returned to the model.
  */
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import type { Component, DescribeContext, NativeNode, NativeScreen, NativeUiEvent } from "@oh-my-pi/pi-tui";
+import type { JSXNode, UiEvent } from "@oh-my-pi/pi-tui";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -29,7 +29,7 @@ import {
   type VaultConfigEntry,
 } from "./ansible-vault.ts";
 import { PASSWORD_STORE_LABEL, deleteVaultPassword, isVaultPasswordStored, storeVaultPassword } from "./password-store.ts";
-import { Memo, bar, button, fit, isClose, isKey, leafKey, n, prose, txt } from "./tsp-nodes.ts";
+import { bar, button, leafKey, mount, n, prose } from "./tsp-nodes.ts";
 
 type Config = Record<string, VaultConfigEntry>;
 type PasswordState = "stored" | "not stored" | "unknown";
@@ -54,7 +54,8 @@ interface Session {
 type Intent =
   | { k: "close" }
   | { k: "add" }
-  | { k: "edit" | "remove" | "password" | "open" | "key-add"; vault: string }
+  | { k: "edit" | "remove" | "password" | "open"; vault: string }
+  | { k: "key-add"; vault: string }
   | { k: "key-update" | "key-delete"; vault: string; key: string };
 
 const NEW_ID = "New password id…";
@@ -124,13 +125,10 @@ function keysOf(plaintext: string): { key: string; raw: string }[] | string {
 function showScreen(ctx: ExtensionContext, session: Session, rows: VaultRow[]): Promise<Intent> {
   return ctx
     .ui.custom<Intent>(
-      (tui, _theme, _kb, done) => {
-        let version = 0;
+      (_ui, _theme, _kb, done) =>
+        mount(refresh => {
         let closed = false;
-        const bump = () => {
-          version++;
-          tui.requestRender();
-        };
+        const bump = refresh;
         const finish = (intent: Intent) => {
           if (closed) return;
           closed = true;
@@ -195,7 +193,7 @@ function showScreen(ctx: ExtensionContext, session: Session, rows: VaultRow[]): 
           }
         };
 
-        const onEvent = (e: NativeUiEvent): void => {
+        const onEvent = (e: UiEvent): void => {
           if (e.type === "select" || e.type === "activate") {
             const leaf = leafKey(e.key);
             if (leaf === "vaults") {
@@ -213,146 +211,109 @@ function showScreen(ctx: ExtensionContext, session: Session, rows: VaultRow[]): 
           bump();
         };
 
-        const body = new Memo();
-        const bodyComp: Component = {
-          describe(cx: DescribeContext): NativeNode {
-            return body.get([version, cx.dark], () => {
-              if (rows.length === 0) return prose("No vaults declared. Press a to add one.");
-              const sel = row();
-              const left = n(
-                "list",
-                { selected: session.selected },
-                rows.map(r => n("item", { label: r.name, detail: r.entry.description ?? r.entry.file }, undefined, r.name)),
-                "vaults",
-              );
-              if (!sel) return left;
-              const list = keys();
-              const open = session.open.has(sel.name);
-              const inner: NativeNode[] = [
-                n(
-                  "kv",
+        const body = (): JSXNode => {
+          if (rows.length === 0) return prose("No vaults declared. Press a to add one.");
+          const sel = row();
+          const left = n(
+            "list",
+            { selected: session.selected },
+            rows.map(r => n("item", { label: r.name, detail: r.entry.description ?? r.entry.file }, undefined, r.name)),
+            "vaults",
+          );
+          if (!sel) return left;
+          const list = keys();
+          const open = session.open.has(sel.name);
+          const inner: JSXNode[] = [
+            n(
+              "kv",
+              {
+                items: [
+                  { k: "file", v: sel.entry.file },
+                  { k: "file status", v: sel.fileExists ? "present" : "missing" },
+                  { k: "password id", v: sel.entry.passwordId },
                   {
-                    items: [
-                      { k: "file", v: sel.entry.file },
-                      { k: "file status", v: sel.fileExists ? "present" : "missing" },
-                      { k: "password id", v: sel.entry.passwordId },
-                      {
-                        k: "password",
-                        v: sel.password === "stored" ? `stored in ${PASSWORD_STORE_LABEL}` : sel.password,
-                      },
-                      { k: "description", v: sel.entry.description ?? "-" },
-                    ],
+                    k: "password",
+                    v: sel.password === "stored" ? `stored in ${PASSWORD_STORE_LABEL}` : sel.password,
                   },
-                  undefined,
-                  "info",
-                ),
-              ];
-              if (!open) inner.push(prose("Locked. Press Enter to unlock and show keys."));
-              else if (typeof list === "string") inner.push(prose(list));
-              else if (list && list.length === 0) inner.push(prose("No keys. Press n to add one."));
-              else if (list) {
-                inner.push(
-                  n(
-                    "list",
-                    { selected: session.keySel },
-                    list.map(k => n("item", { label: k.key, detail: keyDetail(k) }, undefined, k.key)),
-                    "keys",
-                  ),
-                );
-              }
-              return n("row", { gap: "lg", align: "stretch" }, [
-                left,
-                n("card", { head: sel.name, grow: 1 }, inner, "detail"),
-              ]);
-            });
-          },
-          handleNativeEvent: onEvent,
-          render: () => [],
-          invalidate() {},
+                  { k: "description", v: sel.entry.description ?? "-" },
+                ],
+              },
+              undefined,
+              "info",
+            ),
+          ];
+          if (!open) inner.push(prose("Locked. Press Enter to unlock and show keys."));
+          else if (typeof list === "string") inner.push(prose(list));
+          else if (list && list.length === 0) inner.push(prose("No keys. Press n to add one."));
+          else if (list) {
+            inner.push(
+              n(
+                "list",
+                { selected: session.keySel },
+                list.map(k => n("item", { label: k.key, detail: keyDetail(k) }, undefined, k.key)),
+                "keys",
+              ),
+            );
+          }
+          return n("row", { gap: "lg", align: "stretch" }, [left, n("card", { head: sel.name, grow: 1 }, inner, "detail")]);
         };
 
-        const dock = new Memo();
-        const root: Component = {
-          describeScreen(_cx: DescribeContext): NativeScreen {
-            return { role: "ansible-vaults.screen", main: [bodyComp], dock: [root] };
-          },
-          describe(cx: DescribeContext): NativeNode {
-            return dock.get([version, cx.dark], () => {
-              const keysFocus = session.focus === "keys";
-              const hints = keysFocus
-                ? "↑↓ select · n new · u set · x delete · r reveal · tab back · esc close"
-                : "↑↓ select · a add · e edit · d remove · p password · enter keys · esc close";
-              return n("col", { gap: "sm" }, [
-                n("status", {}, [
-                  n("seg", { spans: [{ t: `${rows.length} vaults · ${session.focus}` }], side: "left" }),
-                  n("seg", { spans: [{ t: hints, s: "muted" }], side: "right" }),
-                ]),
-                bar(
-                  keysFocus
-                    ? [
-                        button("New key", "key-add", "n"),
-                        button("Set value", "key-update", "u"),
-                        button("Delete key", "key-delete", "x"),
-                        button("Reveal/Hide", "reveal", "r"),
-                        null,
-                        button("Back", "focus", "tab"),
-                        button("Close", "close", "escape"),
-                      ]
-                    : [
-                        button("Add", "add", "a"),
-                        button("Edit", "edit", "e"),
-                        button("Remove", "remove", "d"),
-                        button("Set password", "password", "p"),
-                        button("Open keys", "open", "enter"),
-                        null,
-                        button("Close", "close", "escape"),
-                      ],
-                ),
-              ]);
-            });
-          },
-          handleNativeEvent: onEvent,
-          handleInput(data: string): void {
-            if (isClose(data)) return finish({ k: "close" });
-            if (isKey(data, "up")) move(-1);
-            else if (isKey(data, "down")) move(1);
-            else if (isKey(data, "tab")) return act("focus");
+        const dock = (): JSXNode => {
+          const keysFocus = session.focus === "keys";
+          const hints = keysFocus
+            ? "↑↓ select · n new · u set · x delete · r reveal · tab back · esc close"
+            : "↑↓ select · a add · e edit · d remove · p password · enter keys · esc close";
+          return n("col", { gap: "sm" }, [
+            n("status", {}, [
+              n("seg", { spans: [{ t: `${rows.length} vaults · ${session.focus}` }], side: "left" }),
+              n("seg", { spans: [{ t: hints, s: "muted" }], side: "right" }),
+            ]),
+            bar(
+              keysFocus
+                ? [
+                    button("New key", "key-add", "n"),
+                    button("Set value", "key-update", "u"),
+                    button("Delete key", "key-delete", "x"),
+                    button("Reveal/Hide", "reveal", "r"),
+                    null,
+                    button("Back", "focus", "tab"),
+                    button("Close", "close", "escape"),
+                  ]
+                : [
+                    button("Add", "add", "a"),
+                    button("Edit", "edit", "e"),
+                    button("Remove", "remove", "d"),
+                    button("Set password", "password", "p"),
+                    button("Open keys", "open", "enter"),
+                    null,
+                    button("Close", "close", "escape"),
+                  ],
+            ),
+          ]);
+        };
+
+        return {
+          describe: () => n("col", { gap: "sm" }, [body(), dock()]),
+          handleEvent: onEvent,
+          handleKey(key): void {
+            const id = key.id;
+            if (id === "escape" || id === "q") return finish({ k: "close" });
+            if (id === "up") move(-1);
+            else if (id === "down") move(1);
+            else if (id === "tab") return act("focus");
             else if (session.focus === "keys") {
-              const a = { n: "key-add", u: "key-update", x: "key-delete", r: "reveal" }[data];
+              const a = ({ n: "key-add", u: "key-update", x: "key-delete", r: "reveal" } as Record<string, string>)[id];
               if (a) return act(a);
-            } else if (isKey(data, "enter")) return act("open");
+            } else if (id === "enter") return act("open");
             else {
-              const a = { a: "add", e: "edit", d: "remove", p: "password" }[data];
+              const a = ({ a: "add", e: "edit", d: "remove", p: "password" } as Record<string, string>)[id];
               if (a) return act(a);
             }
             bump();
           },
-          render(width: number): readonly string[] {
-            const out = ["Ansible vaults — ↑↓ select · a add · e edit · d remove · p password · enter keys · tab focus · esc close"];
-            for (const r of rows) {
-              const pw = r.password === "stored" ? "stored" : r.password;
-              out.push(`${r.name === session.selected ? ">" : " "} ${r.name}  (${r.entry.description ?? r.entry.file})  [password: ${pw}]`);
-            }
-            const sel = row();
-            if (sel) {
-              out.push(
-                "",
-                `file: ${sel.entry.file}${sel.fileExists ? "" : " (missing)"}`,
-                `password id: ${sel.entry.passwordId}`,
-              );
-              const list = keys();
-              if (!session.open.has(sel.name)) out.push("Locked — Enter to unlock");
-              else if (typeof list === "string") out.push(list);
-              else for (const k of list ?? []) out.push(`${session.focus === "keys" && k.key === session.keySel ? ">" : " "} ${k.key}  ${keyDetail(k)}`);
-            }
-            return out.map(l => fit(l, width));
-          },
-          invalidate() {},
-          dispose() {},
         };
-        return root;
-      },
-      { overlay: true, overlayOptions: { fullscreen: true } },
+        }),
+      { overlay: true, fullscreen: true },
     )
     .then(intent => intent ?? { k: "close" });
 }

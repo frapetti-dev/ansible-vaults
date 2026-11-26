@@ -1,6 +1,4 @@
 import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import type * as PiTui from "@oh-my-pi/pi-tui";
-import type { KeybindingsManager, TUI, Theme } from "@oh-my-pi/pi-tui";
 import {
   createCipheriv,
   createDecipheriv,
@@ -12,6 +10,8 @@ import {
 } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { LineInput } from "./line-input.ts";
+import { heading, mount, n, prose, txt } from "./tsp-nodes.ts";
 import { PASSWORD_STORE_LABEL, isVaultPasswordStored, loadVaultPassword, storeVaultPassword } from "./password-store.ts";
 
 /**
@@ -387,72 +387,36 @@ function describeEntry(e: EntryParam): string {
   }
 }
 
-export async function readMasked(
+export function readMasked(
   ctx: ExtensionContext,
   signal: AbortSignal | undefined,
   title: string,
   message: string | undefined,
 ): Promise<string | undefined> {
-  let tuiMod: typeof PiTui;
-  try {
-    // Dynamic: keeps the pure helpers importable from a plain bun script without resolving host packages.
-    tuiMod = await import("@oh-my-pi/pi-tui");
-  } catch {
-    throw new Error('prompt source unavailable (pi-tui not resolvable); use secret_input + source "file"');
-  }
-  const { Container, Input, Text } = tuiMod;
-
-  class SecretPrompt {
-    #container: InstanceType<typeof Container>;
-    #input: InstanceType<typeof Input>;
-
-    constructor(
-      private tui: TUI,
-      theme: Theme,
-      title: string,
-      message: string | undefined,
-      done: (v: string | undefined) => void,
-    ) {
-      this.#input = new Input();
-      this.#input.mask = true;
-      this.#input.prompt = "> ";
-      this.#input.onSubmit = (v: string) => done(v);
-      this.#input.onEscape = () => done(undefined);
-
-      const children = [new Text(theme.fg("accent", theme.bold(title)), 1, 0)];
-      if (message) children.push(new Text(theme.fg("muted", message), 1, 0));
-      children.push(this.#input);
-      children.push(new Text(theme.fg("muted", "Enter: save · Esc: cancel · the value is never shown to the model"), 1, 0));
-
-      this.#container = new Container();
-      for (const child of children) this.#container.children.push(child);
-    }
-
-    render(width: number): readonly string[] {
-      return this.#container.render(width);
-    }
-
-    invalidate(): void {
-      this.#container.invalidate?.();
-    }
-
-    handleInput(data: string): void {
-      this.#input.handleInput(data);
-      this.tui.requestRender();
-    }
-
-    get focused(): boolean {
-      return this.#input.focused;
-    }
-
-    set focused(value: boolean) {
-      this.#input.focused = value;
-    }
-  }
-
   return ctx.ui.custom<string | undefined>(
-    (tui: TUI, theme: Theme, _kb: KeybindingsManager, done: (v: string | undefined) => void) =>
-      new SecretPrompt(tui, theme, title, message, done),
+    (_ui, _theme, _kb, done) =>
+      mount(refresh => {
+        const input = new LineInput("", { masked: true });
+        return {
+          describe: () =>
+            n("col", { gap: "sm" }, [
+              heading(title),
+              ...(message ? [prose(message)] : []),
+              input.node({ key: "value", focused: true }),
+              txt([{ t: "Enter: save · Esc: cancel · the value is never shown to the model", s: "muted" }]),
+            ]),
+          handleKey: key => {
+            if (key.id === "enter") return done(input.value);
+            if (key.id === "escape") return done(undefined);
+            input.handleKey(key);
+            refresh();
+          },
+          handlePaste: text => {
+            input.paste(text);
+            refresh();
+          },
+        };
+      }),
     { overlay: true, ...(signal ? { signal } : {}) },
   );
 }
