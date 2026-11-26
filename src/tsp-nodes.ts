@@ -1,23 +1,47 @@
 /**
- * Dependency-light helpers for building Tern Surface Protocol (TSP) nodes.
- * Types only from pi-wire; the one value import is `matchesKey` from pi-tui.
+ * Dependency-light helpers for building TSP nodes as pi-tui nodes, plus `mount`, the bridge to `ctx.ui.custom`.
+ * Value imports from the @oh-my-pi/pi-tui root only.
  */
-import type { DescribeContext, NativeChild, NativeNode } from "@oh-my-pi/pi-tui";
-import { matchesKey } from "@oh-my-pi/pi-tui";
+import { jsx, signal, type JSXNode, type KeyEvent, type UiEvent } from "@oh-my-pi/pi-tui";
 import type { TspKind, TspProps, TspSpan } from "@oh-my-pi/pi-wire";
 
-/** Build a node: `{ k, p, c, key }`. */
-export function n<K extends TspKind>(
-	k: K,
-	p?: TspProps<K>,
-	c?: readonly NativeChild[],
-	key?: string,
-): NativeNode {
-	return { k, p, c, key } as unknown as NativeNode;
+/** A focused view: its tree plus its input handlers. */
+export interface View {
+	describe(): JSXNode;
+	handleKey(key: KeyEvent): void;
+	handlePaste?(text: string): void;
+	handleEvent?(e: UiEvent): void;
+}
+
+/** Root node for ctx.ui.custom: rebuilds `describe()` whenever `refresh` runs; routes keys/paste/events to the view. */
+export function mount(build: (refresh: () => void) => View): JSXNode {
+	const tick = signal(0);
+	const view = build(() => tick.update(v => v + 1));
+	return jsx("col", {
+		children: () => {
+			tick();
+			return view.describe();
+		},
+		onKey: (key: KeyEvent) => {
+			if (key.kind === "release") return false;
+			view.handleKey(key);
+			return true;
+		},
+		onPaste: (p: { text: string }) => {
+			view.handlePaste?.(p.text);
+			return true;
+		},
+		onEvent: (e: UiEvent) => view.handleEvent?.(e),
+	});
+}
+
+/** Build a node. */
+export function n<K extends TspKind>(k: K, p?: TspProps<K>, c?: readonly JSXNode[], key?: string): JSXNode {
+	return jsx(k, c === undefined ? { ...p } : { ...p, children: c }, key) as JSXNode;
 }
 
 /** A `text` node from a plain string or spans. */
-export function txt(s: string | readonly TspSpan[], p: TspProps<"text"> = {}): NativeNode {
+export function txt(s: string | readonly TspSpan[], p: TspProps<"text"> = {}): JSXNode {
 	return typeof s === "string" ? n("text", { ...p, text: s }) : n("text", { ...p, spans: s });
 }
 
@@ -25,12 +49,12 @@ export function txt(s: string | readonly TspSpan[], p: TspProps<"text"> = {}): N
  * Body prose. Free-form `text`/`md` render in monospace unless a role says otherwise;
  * `omp.advisor.note` is a Tern-internal role that draws compact sans text (no box, no padding).
  */
-export function prose(s: string | readonly TspSpan[], p: TspProps<"text"> = {}): NativeNode {
+export function prose(s: string | readonly TspSpan[], p: TspProps<"text"> = {}): JSXNode {
 	return txt(s, { role: "omp.advisor.note", ...p });
 }
 
 /** Short sans heading for a dialog (`omp.sheet.head`: 14px, weight 600); replaces monospace card/section heads. */
-export function heading(s: string): NativeNode {
+export function heading(s: string): JSXNode {
 	return txt(s, { role: "omp.sheet.head" });
 }
 
@@ -38,7 +62,7 @@ export function heading(s: string): NativeNode {
  * Dialog content inset from the overlay frame. TSP has no padding prop on `col`/`row`, an overlay
  * role does not pad, and a head-less `card` draws a ring, so padding is built from spacers.
  */
-export function framed(kids: readonly NativeChild[], gap: "sm" | "md" | "lg"): NativeNode {
+export function framed(kids: readonly JSXNode[], gap: "sm" | "md" | "lg"): JSXNode {
 	const side = (key: string) => n("spacer", { min: { w: "2ch" } }, undefined, key);
 	return n(
 		"col",
@@ -53,8 +77,8 @@ export function framed(kids: readonly NativeChild[], gap: "sm" | "md" | "lg"): N
 }
 
 /** Native button: a `row` with role `omp.btn`; a click arrives as `{type:"action", act}`. */
-export function button(label: string, act: string, keys?: string): NativeNode {
-	const children: NativeChild[] = [txt(label)];
+export function button(label: string, act: string, keys?: string): JSXNode {
+	const children: JSXNode[] = [txt(label)];
 	if (keys) children.push(n("kbd", { keys: keys.split("+") }));
 	return n(
 		"row",
@@ -65,14 +89,9 @@ export function button(label: string, act: string, keys?: string): NativeNode {
 }
 
 /** Action bar; `null` entries become a growing spacer. */
-export function bar(buttons: readonly (NativeNode | null)[], key = "actions"): NativeNode {
+export function bar(buttons: readonly (JSXNode | null)[], key = "actions"): JSXNode {
 	const children = buttons.map(b => b ?? n("spacer", { grow: 1 }));
 	return n("row", { role: "omp.actions", gap: "sm", align: "center" }, children, key);
-}
-
-/** `build()` when the terminal supports `kind`, else a muted notice. */
-export function guard(cx: DescribeContext, kind: TspKind, build: () => NativeNode): NativeNode {
-	return cx.supports(kind) ? build() : txt([{ t: `${kind}: not supported by this Tern build`, s: "muted" }]);
 }
 
 /** Truncate plain text to `width` cells with an ellipsis (ANSI fallbacks use plain text only). */
@@ -81,33 +100,7 @@ export function fit(line: string, width: number): string {
 	return line.length <= width ? line : `${line.slice(0, Math.max(0, width - 1))}…`;
 }
 
-export function isKey(data: string, id: string): boolean {
-	return matchesKey(data, id as never);
-}
-
-export function isClose(data: string): boolean {
-	return isKey(data, "escape") || data === "q";
-}
-
 /** Last segment of an event key path (`"a/b/tabs"` -> `"tabs"`). */
 export function leafKey(path: string): string {
 	return path.slice(path.lastIndexOf("/") + 1);
-}
-
-/**
- * Memoize `build` on a list of dependencies: returns the same node object
- * while every dependency is unchanged (the describe contract asks for this).
- */
-export class Memo {
-	#deps: readonly unknown[] | undefined;
-	#value: NativeNode | undefined;
-	get(deps: readonly unknown[], build: () => NativeNode): NativeNode {
-		const d = this.#deps;
-		if (this.#value && d && d.length === deps.length && d.every((v, i) => Object.is(v, deps[i]))) {
-			return this.#value;
-		}
-		this.#deps = deps;
-		this.#value = build();
-		return this.#value;
-	}
 }
